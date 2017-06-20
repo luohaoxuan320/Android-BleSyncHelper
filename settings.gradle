@@ -1,0 +1,1 @@
+include ':app', ':ble_sync_helper'
