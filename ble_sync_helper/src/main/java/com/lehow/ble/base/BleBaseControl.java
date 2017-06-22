@@ -1,5 +1,7 @@
 package com.lehow.ble.base;
 
+
+
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
@@ -7,7 +9,10 @@ import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
@@ -19,7 +24,7 @@ import java.lang.reflect.Method;
  * Created by lehow on 2017/4/13.
  */
 
- class BleBaseControl {
+class BleBaseControl {
 
     private static final String TAG ="BleBaseControl" ;
     private Context mContext;
@@ -137,8 +142,7 @@ import java.lang.reflect.Method;
     private final BluetoothGattCallback mGattCallback = new BluetoothGattCallback() {
         @Override
         public void onConnectionStateChange(final BluetoothGatt gatt, final int status, final int newState) {
-            Log.d(TAG, "onConnectionStateChange() called with: gatt = [" + gatt + "], status = [" + status + "], newState = [" + newState + "]");
-
+            logi( "onConnectionStateChange() called with: gatt = [" + gatt + "], status = [" + status + "], newState = [" + newState + "]");
             // Check whether an error occurred
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 if (newState == BluetoothGatt.STATE_CONNECTED) {
@@ -158,12 +162,7 @@ import java.lang.reflect.Method;
 					 *  NOTE: We are doing this to avoid the hack with calling the hidden gatt.refresh() method, at least for bonded devices.
 					 */
                     if (gatt.getDevice().getBondState() == BluetoothDevice.BOND_BONDED) {
-                        logi("Waiting 1600 ms for a possible Service Changed indication...");
-                        waitFor(1600);
-                        // After 1.6s the services are already discovered so the following gatt.discoverServices() finishes almost immediately.
-
-                        // NOTE: This also works with shorted waiting time. The gatt.discoverServices() must be called after the indication is received which is
-                        // about 600ms after establishing connection. Values 600 - 1600ms should be OK.
+                        handleTheBondDevice(gatt);
                     }
                     // Attempts to discover services after successful connection.
                     logi("Discovering services...");
@@ -440,7 +439,45 @@ import java.lang.reflect.Method;
             }
         }
     }
+    protected boolean mRequestCompleted;
+    /**
+     * Removes the bond information for the given device.
+     *
+     *  @return <code>true</code> if operation succeeded, <code>false</code> otherwise
+     */
+    protected boolean removeBond(final BluetoothGatt mGatt) {
+        final BluetoothDevice device = mGatt.getDevice();
+        if (device.getBondState() == BluetoothDevice.BOND_NONE)
+            return true;
+        boolean result = false;
+        registerBondStateChange();
+		/*
+		 * There is a removeBond() method in BluetoothDevice class but for now it's hidden. We will call it using reflections.
+		 */
+        try {
+            final Method removeBond = device.getClass().getMethod("removeBond");
+            if (removeBond != null) {
+                mRequestCompleted = false;
+                logi("removeBond ing...");
+                result = (Boolean) removeBond.invoke(device);
 
+                // We have to wait until device is unbounded
+                try {
+                    synchronized (mLock) {
+                        while (!mRequestCompleted )
+                            mLock.wait();
+                    }
+                } catch (final InterruptedException e) {
+                    loge("Sleeping interrupted", e);
+                }
+            }
+            result = true;
+        } catch (final Exception e) {
+            Log.w(TAG, "An exception occurred while removing bond information", e);
+        }
+        unRegisterBondStateChange();
+        return result;
+    }
 
     public boolean isRealConnected(){
         return mConnectionState == STATE_CONNECTED_AND_READY;
@@ -454,5 +491,46 @@ import java.lang.reflect.Method;
     }
     private void logi(final String message) { Log.i(TAG, message);}
 
+    //默认发现设备在系统列表中已配对,就主动取消掉
+    private void handleTheBondDevice(BluetoothGatt gatt) {
+        if (true) {
+            logi(" removing the bond information...");
+            // The bond information was lost.
+            removeBond(gatt);
+        }else{
+            logi("Waiting 1600 ms for a possible Service Changed indication...");
+            waitFor(1600);
+            // After 1.6s the services are already discovered so the following gatt.discoverServices() finishes almost immediately.
 
+            // NOTE: This also works with shorted waiting time. The gatt.discoverServices() must be called after the indication is received which is
+            // about 600ms after establishing connection. Values 600 - 1600ms should be OK.
+        }
+    }
+
+    private void registerBondStateChange(){
+        final IntentFilter bondFilter = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        mContext.registerReceiver(mBondStateBroadcastReceiver, bondFilter);
+    }
+    private void unRegisterBondStateChange(){
+        mContext.unregisterReceiver(mBondStateBroadcastReceiver);
+    }
+    private final BroadcastReceiver mBondStateBroadcastReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(final Context context, final Intent intent) {
+            // Obtain the device and check if this is the one that we are connected to
+            final BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            if (!device.getAddress().equals(mDeviceAddress))
+                return;
+
+            // Read bond state
+            final int bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1);
+            if (bondState == BluetoothDevice.BOND_NONE) {
+                mRequestCompleted = true;
+                synchronized (mLock) {
+                    mLock.notifyAll();
+                }
+            }
+
+        }
+    };
 }
