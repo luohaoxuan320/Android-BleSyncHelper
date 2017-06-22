@@ -37,13 +37,13 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
     private BaseRequest currentCharAction;
 
     private final Object mLock = new Object();
-
+    private boolean mRequestCompleted=false;
 
     private int mOpState= STATE_DISCONNECTED;
 
     public static final int STATE_DISCONNECTED = 0;
     public static final int STATE_CONNECTING = 1;
-//    public static final int STATE_CONNECTED = 2;
+    //    public static final int STATE_CONNECTED = 2;
     public static final int STATE_DISCONNECTING = 2;
     public static final int STATE_ACTIONING = 3;
     /**
@@ -322,6 +322,7 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
                         baseCharAction.execute(bleConnGatt, null);
                     }
                     Log.w(TAG, "==wait==");
+                    mRequestCompleted = false;
                     waitUntilActionResponse();
                     if (mOpState != STATE_DISCONNECTED) {
                         mOpState = STATE_IDLE;
@@ -395,11 +396,21 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
     }
 
     private void waitUntilActionResponse() {
-            try {
+        try {
+            while (!mRequestCompleted) {
                 mLock.wait();
-            } catch (final InterruptedException e) {
-                Log.e(TAG,"Sleeping interrupted", e);
             }
+        } catch (final InterruptedException e) {
+            Log.e(TAG,"Sleeping interrupted", e);
+        }
+    }
+
+    protected void notifyLock() {
+        mRequestCompleted = true;
+        // Notify waiting thread
+        synchronized (mLock) {
+            mLock.notifyAll();
+        }
     }
 
     private BluetoothGattCharacteristic findTheGattCharacteristic(UUID serviceUuid, UUID charUuid) {
@@ -511,7 +522,7 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
             // ，而状态又不是断开，所以后面接着read，然后一直wait。真正的断开代码不会被执行
             checkTheConnModel();
             notifyConnectionStateChange(OnConnectionChangeListener.STATE_DISCONNECTED);
-            mLock.notifyAll();
+            notifyLock();
         }
     }
 
@@ -522,10 +533,7 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
         }else{
             dispatchOpResult(characteristic.getUuid(),status);
         }
-        // Notify waiting thread
-        synchronized (mLock) {
-            mLock.notifyAll();
-        }
+        notifyLock();
     }
 
 
@@ -534,10 +542,7 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
     public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
         Log.d(TAG, "onCharacteristicWrite() called with: gatt = [" + gatt + "], characteristic = [" + characteristic + "], value = [" + DataTransferUtils.getHexString(characteristic.getValue()) +"], status = [" + status + "]");
         dispatchOpResult(characteristic.getUuid(), status);
-        // Notify waiting thread
-        synchronized (mLock) {
-            mLock.notifyAll();
-        }
+        notifyLock();
     }
 
     @Override
@@ -554,9 +559,7 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
     @Override
     public void onDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
         // Notify waiting thread
-        synchronized (mLock) {
-            mLock.notifyAll();
-        }
+        notifyLock();
     }
 
     @Override
@@ -567,10 +570,7 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
             checkIsNotifyConfigAndRegisterCallback(descriptor);
         }
         dispatchOpResult(descriptor.getCharacteristic().getUuid(), status);
-        // Notify waiting thread
-        synchronized (mLock) {
-            mLock.notifyAll();
-        }
+        notifyLock();
     }
 
     @Override
@@ -580,10 +580,7 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
         }else{
             dispatchOpResult(null,status);
         }
-        // Notify waiting thread
-        synchronized (mLock) {
-            mLock.notifyAll();
-        }
+        notifyLock();
     }
 
 }
