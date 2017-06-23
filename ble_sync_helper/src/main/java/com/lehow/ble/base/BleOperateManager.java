@@ -406,9 +406,9 @@ public class BleOperateManager extends HandlerThread implements SimpleBleGattCal
     }
 
     protected void notifyLock() {
-        mRequestCompleted = true;
         // Notify waiting thread
         synchronized (mLock) {
+            mRequestCompleted = true;
             mLock.notifyAll();
         }
     }
